@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Chinatown Active Catcher • Move together</title>
   <link rel="stylesheet" href="style.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js" crossorigin="anonymous"></script>
   <script defer src="game-core.js"></script>
   <script defer src="game.js"></script>
 </head>
@@ -27,8 +26,6 @@
           <label for="limb">Move with</label><select id="limb"><option value="hands">Hands • 手臂</option><option value="legs">Legs / side steps • 双腿</option><option value="both">Hands and legs • 全部</option></select>
           <p id="movementHint" class="help">Reach comfortably with your hands to catch the blue circles.</p>
           <label for="difficulty">Difficulty</label><select id="difficulty"><option value="easy">Easy • 容易</option><option value="medium">Medium • 普通</option><option value="hard">Hard • 困难</option></select>
-          <label for="theme">Objects to collect</label><select id="theme"><option value="fruit">Fruit</option><option value="celebration">Celebration</option><option value="garden">Flowers and plants</option><option value="sport">Sports balls</option><option value="custom">My own objects</option></select>
-          <div id="customObjects" hidden><label for="custom">Type emoji or short words, separated by commas</label><input id="custom" maxlength="100" placeholder="⭐, 🧸, Books"><p class="help">Up to six objects. Empty input uses fruit.</p></div>
           <label class="check"><input type="checkbox" id="weights"> Optional hand-weight session</label>
           <p class="help">Hands mode at easy speed, with extra time to reach. Use only weights already agreed with your activity facilitator; keep wrists visible. No weights are required.</p>
           <label class="check"><input type="checkbox" id="mirror" checked> Mirror camera • 镜像</label>
@@ -46,36 +43,39 @@
       </section>
       <section class="glass-panel">
         <h2>What to catch • 游戏道具</h2>
-        <div class="legend-item"><span class="target-good" id="legendGood">🍎</span><div>Blue circle <strong>+10</strong><p class="help">Collect these objects.</p></div></div>
+        <div class="legend-item"><span class="target-good">🍎</span><div>Fruit <strong>+10</strong><p class="help">Catch the fruit in blue circles.</p></div></div>
+        <div class="legend-item"><span class="target-bonus">🏮</span><div>Celebration <strong>2×</strong><p class="help">Lanterns and red packets double fruit points for 10 seconds. Catch another to refresh the timer.</p></div></div>
         <div class="legend-item"><img src="rotten-fruit.svg" width="48" height="48" alt="Red rotten fruit with an X"><div>Red rotten fruit <strong>−10</strong><p class="help">Avoid the red X.</p></div></div>
         <div class="legend-item" id="bombLegend"><span class="target-bad">💣</span><div>Red bomb <strong>−10</strong><p class="help">No bombs in legs mode.</p></div></div>
         <p class="help">Targets gently blink before leaving the screen. A “leaving” label also appears.</p>
       </section>
       <section class="glass-panel">
         <h2>Our high scores • 荣誉榜</h2>
-        <p class="help">Top 10 for the current movement, difficulty and weight setting. Saved on this browser only; demo scores are separate.</p>
+        <p class="help">Top 10 for fruit + bonus rounds with the current movement, difficulty and weight setting. Saved on this browser only; demo scores are separate.</p>
         <ol id="leaderboard"></ol><p id="storageMessage" class="help" role="status"></p>
       </section>
       <section class="glass-panel">
         <h2>Move together</h2><p>Invite a friend for a short round before lunch.</p>
         <details><summary>Five-day activity plan</summary><p class="help">30 minutes before lunch: 5 min welcome and setup, 5 min practice, 15 min short rounds with rests and partner swaps, 5 min cool-down and conversation.</p>
-          <ol class="programme"><li>Monday: fruit and gentle hand reaches</li><li>Tuesday: flowers and side steps</li><li>Wednesday: celebration with a friend</li><li>Thursday: choose your own objects</li><li>Friday: friendly team score challenge</li></ol>
+          <ol class="programme"><li>Monday: fruit and gentle hand reaches</li><li>Tuesday: fruit and side steps</li><li>Wednesday: catch celebration bonuses with a friend</li><li>Thursday: comfortable reaches and partner swaps</li><li>Friday: friendly team score challenge</li></ol>
           <p class="help">These are variations of this game. Stop or pause whenever needed; participation is optional.</p></details>
       </section>
     </aside>
-    <section class="game-container" id="gameArea" aria-label="Motion catching game">
-      <canvas id="gameCanvas" width="960" height="720" aria-label="Camera view and falling targets"></canvas>
+    <section class="game-container setup-layout" id="gameArea" aria-label="Motion catching game">
+      <div class="camera-stage" id="cameraStage">
+        <canvas id="gameCanvas" width="960" height="720" aria-label="Mirrored camera preview and falling targets"></canvas>
+        <span id="previewBadge" class="preview-badge">Camera preview · Mirror on</span>
+      </div>
       <div class="game-toolbar"><button id="fullscreenButton">Fullscreen</button><button id="pauseButton" hidden>Pause</button><button id="finishButton" hidden>Finish round</button></div>
       <div class="game-hud" id="gameHud" hidden><span id="hudScore">0</span><span id="hudTime">60s</span></div>
       <div id="safetyWarning" class="safety-warning" role="alert" hidden></div>
       <div class="overlay-screen" id="setupOverlay"><div class="overlay-content">
-        <span class="eyebrow">A LITTLE MOVEMENT. A SHARED MOMENT.</span>
-        <h2 class="overlay-title">Ready to catch some joy?</h2><p class="overlay-subtitle">一起动起来 • Let's move together</p>
-        <p id="setupInstructions">Connect your camera, then stand where your shoulders, hips and hands are visible. Use a comfortable distance and keep the floor clear.</p>
-        <div class="setup-actions"><button id="setupConnect">Connect cameras</button> <button id="setupDemo">Try mouse / touch demo</button></div>
+        <h2 class="overlay-title">See yourself. Get comfortable.</h2>
+        <p id="setupInstructions">Connect your camera and show your shoulders and hands. Your hips and feet are not needed in Hands mode.</p>
+        <div class="setup-actions"><button id="setupConnect">Connect cameras</button> <button id="setupMirror" aria-pressed="true">Mirror: on</button> <button id="setupDemo">Try mouse / touch demo</button> <button id="cancelConnect" hidden>Cancel camera setup</button></div>
+        <p id="setupMessage" class="help" role="status">Your live video will appear above as soon as you allow camera access.</p>
         <div id="playerStatus" class="player-status" role="status"></div>
         <button id="startButton" class="btn-primary" disabled>Connect a camera to begin</button>
-        <p class="help">Start with a short, skippable practice. Each scored round lasts 60 seconds.</p>
       </div></div>
       <div id="tutorialPanel" class="tutorial-panel" hidden>
         <h2>Practice • 练习</h2><p id="tutorialText"></p><p id="practiceCount" role="status">Catch the practice target.</p>
@@ -85,7 +85,7 @@
         <h2 class="overlay-title">Well played together!</h2><p id="finalScore" class="final-score"></p><p id="resultMessage"></p>
         <p class="overlay-subtitle">Take a breather, then invite a friend for a turn.</p><button id="againButton" class="btn-primary">Play again • 再玩一次</button>
       </div></div>
-      <p class="play-caption" id="playCaption">Blue circles: collect +10 · Red hazards: avoid −10</p>
+      <p class="play-caption" id="playCaption">Fruit +10 · Gold celebration 2× for 10s · Red hazards −10</p>
     </section>
   </main>
 </body>

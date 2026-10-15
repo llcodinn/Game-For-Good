@@ -8,11 +8,49 @@ const state = { phase: 'setup', demo: false, connecting: false, generation: 0, p
   items: [], effects: [], remaining: 60, elapsed: 0, spawn: 0, paused: false, practice: 0,
   scores: [], lastFrame: 0, devices: [], message: '', settings: null };
 let audio;
+let poseScriptPromise;
+const POSE_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/';
+function cameraMessage(message, error = false) {
+  $('cameraMessage').textContent = message;
+  $('setupMessage').textContent = message;
+  $('setupMessage').dataset.error = String(error);
+}
+function withDeadline(promise, milliseconds, message) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), milliseconds);
+  })]).finally(() => clearTimeout(timer));
+}
+function loadPoseScript() {
+  if (typeof Pose !== 'undefined') return Promise.resolve();
+  if (poseScriptPromise) return poseScriptPromise;
+  const script = document.createElement('script');
+  script.src = `${POSE_BASE}pose.js`; script.crossOrigin = 'anonymous';
+  const loaded = new Promise((resolve, reject) => {
+    script.onload = () => typeof Pose !== 'undefined' ? resolve() : reject(new Error('Tracking library unavailable.'));
+    script.onerror = () => reject(new Error('Tracking library download failed.'));
+    document.head.append(script);
+  });
+  poseScriptPromise = withDeadline(loaded, 20000, 'Tracking library download timed out.').catch(error => {
+    script.remove(); poseScriptPromise = null; throw error;
+  });
+  return poseScriptPromise;
+}
+function explainCameraError(error) {
+  if (['NotAllowedError', 'PermissionDeniedError', 'SecurityError'].includes(error.name))
+    return 'Camera permission is blocked. In Chrome or Edge, open the site controls beside the address bar, allow Camera, then reconnect. Also check Windows Settings → Privacy & security → Camera.';
+  if (['NotFoundError', 'DevicesNotFoundError', 'OverconstrainedError'].includes(error.name))
+    return 'The selected camera was not found. Plug it in, choose Default camera or another camera in Settings, then reconnect.';
+  if (['NotReadableError', 'TrackStartError', 'AbortError'].includes(error.name))
+    return 'The camera could not start. Close other apps using it (such as Teams or Zoom), check its privacy switch, then reconnect.';
+  return error.message || 'Unable to connect. Check camera permissions and reconnect.';
+}
+function closePose(p) { try { Promise.resolve(p.pose?.close()).catch(() => {}); } catch {} }
 function settings() {
   return { count: Number($('players').value), limb: $('limb').value, difficulty: $('difficulty').value,
-    theme: $('theme').value, custom: $('custom').value, weights: $('weights').checked, mirror: $('mirror').checked };
+    weights: $('weights').checked, mirror: $('mirror').checked };
 }
-function modeKey(s = settings()) { return `${s.limb} · ${s.difficulty}${s.weights ? ' · weights' : ''}${state.demo ? ' · demo' : ''}`; }
+function modeKey(s = settings()) { return `fruit-bonus · ${s.limb} · ${s.difficulty}${s.weights ? ' · weights' : ''}${state.demo ? ' · demo' : ''}`; }
 function loadScores() {
   try { state.scores = R.cleanScores(JSON.parse(localStorage.getItem('catcher_scores_v2') || '[]')); }
   catch { state.scores = []; $('storageMessage').textContent = 'Scores are available for this visit; browser storage is unavailable or unreadable.'; }
@@ -25,24 +63,26 @@ function showScores() {
 }
 function names() { return [1, 2].map(i => $(`name${i}`).value.trim().slice(0, 24) || `Player ${i}`); }
 function newPlayer(id) {
-  return { id, name: names()[id], score: 0, video: null, stream: null, pose: null, landmarks: null,
-    lastSeen: 0, stableSince: 0, baseline: 0, scaleSamples: [], close: false, ready: false, center: 0.5, error: '' };
+  return { id, name: names()[id], score: 0, bonusLeft: 0, lastValid: 0, video: null, stream: null, pose: null, landmarks: null,
+    lastSeen: 0, stableSince: 0, baseline: 0, scaleSamples: [], close: false, ready: false, center: 0.5, error: '', tracker: 'waiting' };
 }
 function updateSettings() {
   if (state.phase !== 'setup') return;
   if ($('weights').checked) { $('limb').value = 'hands'; $('difficulty').value = 'easy'; }
   $('limb').disabled = $('difficulty').disabled = $('weights').checked;
   $('secondName').hidden = $('players').value !== '2';
-  $('customObjects').hidden = $('theme').value !== 'custom';
   const s = settings();
   $('movementHint').textContent = s.limb === 'legs'
     ? 'Step gently sideways, left and right. Your ankle markers collect objects in the narrow column. No bombs.'
     : s.limb === 'both' ? 'Use comfortable hand reaches and gentle side steps. Keep hands and feet visible.'
     : 'Reach comfortably with your hands to catch the blue circles.';
-  $('setupInstructions').textContent = `Connect your camera and keep your shoulders, hips and ${s.limb === 'hands' ? 'hands' : 'feet'} visible. Stand at a comfortable distance, then hold your position for two seconds.`;
+  $('setupInstructions').textContent = s.limb === 'hands'
+    ? 'Show both shoulders and at least one hand for two seconds. Your hips and feet do not need to be visible in Hands mode. No extra pairing is needed.'
+    : `Show both shoulders, hips and ${s.limb === 'both' ? 'at least one hand and one ankle' : 'at least one ankle'} for two seconds. No extra pairing is needed.`;
   $('bombLegend').hidden = s.limb === 'legs';
-  $('legendGood').textContent = R.objectList(s.theme, s.custom)[0];
-  for (const p of state.players) { p.ready = state.demo; p.baseline = 0; p.stableSince = 0; p.scaleSamples = []; }
+  $('setupMirror').textContent = `Mirror: ${s.mirror ? 'on' : 'off'}`;
+  $('setupMirror').setAttribute('aria-pressed', String(s.mirror));
+  for (const p of state.players) { p.ready = state.demo; p.baseline = 0; p.stableSince = 0; p.lastValid = 0; p.scaleSamples = []; }
   showScores();
 }
 function cameraSelectors() {
@@ -66,7 +106,7 @@ async function stopCameras() {
     p.stream?.getTracks().forEach(t => t.stop());
     if (p.video) p.video.srcObject = null;
     // Close only after an in-flight inference finishes.
-    if (p.pose && !p.busy) { try { await p.pose.close(); } catch {} }
+    if (p.pose && !p.busy) closePose(p);
   }
 }
 async function enumerateCameras() {
@@ -81,10 +121,9 @@ async function connectCameras() {
   await stopCameras();
   const generation = state.generation;
   const requested = [0, 1].map(i => $(`camera${i}`)?.value || '');
-  $('cameraMessage').textContent = 'Allow camera access. Loading body tracking may take a moment…';
+  cameraMessage('Choose Allow in your browser’s camera prompt. Your mirrored preview will appear above.');
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Open this game on localhost or HTTPS to use a camera.');
-    if (typeof Pose === 'undefined') throw new Error('Body tracking could not load. Check your internet connection and reload, or use the demo.');
     for (let i = 0; i < Number($('players').value); i++) {
       const p = newPlayer(i); state.players.push(p);
       let id = requested[i];
@@ -94,51 +133,85 @@ async function connectCameras() {
         id = state.devices.find(d => d.deviceId !== first)?.deviceId;
         if (!id) throw new Error('Two-player mode needs two different cameras. Connect another camera, or choose one player.');
       }
-      p.stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: {
+      let abandoned = false;
+      const request = navigator.mediaDevices.getUserMedia({ audio: false, video: {
         width: { ideal: 640 }, height: { ideal: 480 }, ...(id ? { deviceId: { exact: id } } : {}) } });
+      request.then(stream => { if (abandoned || generation !== state.generation) stream.getTracks().forEach(t => t.stop()); }, () => {});
+      try { p.stream = await withDeadline(request, 20000, 'Still waiting for camera permission. Choose Allow in the browser prompt, then click Reconnect cameras.'); }
+      catch (error) { abandoned = true; throw error; }
       if (generation !== state.generation) { p.stream.getTracks().forEach(t => t.stop()); return; }
       if (i === 1 && p.stream.getVideoTracks()[0].getSettings().deviceId === state.players[0].stream.getVideoTracks()[0].getSettings().deviceId)
         throw new Error('Select two different cameras, one for each player.');
       p.video = document.createElement('video'); p.video.autoplay = true; p.video.muted = true; p.video.playsInline = true;
-      p.video.srcObject = p.stream; await p.video.play();
-      p.pose = new Pose({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/${file}` });
-      p.pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
-      p.pose.onResults(result => { if (generation === state.generation) onPose(p, result); });
+      p.video.srcObject = p.stream;
+      await withDeadline(p.video.play(), 10000, 'Camera connected but video did not start. Reconnect the camera.');
+      if (generation !== state.generation) return;
+      // The preview is rendered independently of model loading and body detection.
       p.stream.getVideoTracks()[0].addEventListener('ended', () => { p.error = 'Camera disconnected. Finish the round and reconnect.'; p.ready = false; });
-      runCamera(p, generation);
+      startTracking(p, generation);
     }
     await enumerateCameras();
     state.players.forEach(p => { const selected = $(`camera${p.id}`); if (selected) selected.value = p.stream.getVideoTracks()[0].getSettings().deviceId; });
-    $('cameraMessage').textContent = 'Cameras connected. Hold a comfortable position to calibrate. Video stays in this browser.';
+    cameraMessage('Camera connected — no extra pairing needed. Watch the checks below; Start practice unlocks when your selected body parts are visible.');
   } catch (error) {
-    await stopCameras();
-    $('cameraMessage').textContent = `Camera setup: ${error.message || 'Unable to connect. Check permissions and try again.'}`;
-  } finally { state.connecting = false; lockControls(); showScores(); }
+    if (generation !== state.generation) return;
+    // Keep any working first camera visible if the second camera fails.
+    for (const p of state.players.filter(p => !p.video || p.video.readyState < 2)) {
+      p.stream?.getTracks().forEach(t => t.stop()); p.error = explainCameraError(error); p.ready = false;
+    }
+    cameraMessage(explainCameraError(error), true);
+  } finally {
+    if (generation === state.generation) { state.connecting = false; lockControls(); showScores(); }
+  }
+}
+async function startTracking(p, generation) {
+  p.tracker = 'loading';
+  try {
+    await loadPoseScript();
+    if (generation !== state.generation) return;
+    p.pose = new Pose({ locateFile: file => `${POSE_BASE}${file}` });
+    p.pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+    p.pose.onResults(result => { if (generation === state.generation && !p.error) onPose(p, result); });
+    runCamera(p, generation);
+  } catch {
+    if (generation !== state.generation) return;
+    p.tracker = 'error'; p.ready = false;
+    p.error = 'Camera is working, but body tracking could not download. Check your internet connection or network blocker, then Reconnect cameras. The mouse / touch demo works without tracking.';
+  }
 }
 async function runCamera(p, generation) {
   if (generation !== state.generation) return;
   try {
     p.busy = true;
-    await p.pose.send({ image: p.video });
-  } catch (error) { p.error = 'Tracking stopped. Finish the round and reconnect the camera.'; p.ready = false; }
-  finally { p.busy = false; }
-  if (generation !== state.generation) { try { await p.pose.close(); } catch {} return; }
+    const inference = Promise.resolve().then(() => p.pose.send({ image: p.video })).finally(() => {
+      p.busy = false; if (generation !== state.generation) closePose(p);
+    });
+    await withDeadline(inference, p.lastSeen ? 8000 : 30000, 'Tracking response timed out.');
+  } catch {
+    if (generation !== state.generation) return;
+    p.tracker = 'error'; p.error = 'Camera is working, but body tracking stopped or could not load. Check your internet connection, then reconnect. If you are playing, finish the round first.'; p.ready = false;
+  }
+  if (generation !== state.generation) return;
   if (!p.error) setTimeout(() => runCamera(p, generation), 35);
 }
 function onPose(p, result) {
+  p.tracker = 'active';
   p.landmarks = result.poseLandmarks || null; p.lastSeen = performance.now();
   const s = state.settings || settings();
-  const proximity = R.proximity(p.landmarks, p.baseline, p.close); p.close = proximity.close;
+  const proximity = R.proximity(p.landmarks, p.baseline, p.close, s.limb); p.close = proximity.close;
   const valid = proximity.valid && !p.close && R.tracked(p.landmarks, s.limb);
   if (state.phase === 'setup') {
-    if (!valid) { p.stableSince = 0; p.ready = false; p.scaleSamples = []; }
+    if (!valid) {
+      if (p.close || p.lastSeen - p.lastValid > 400) { p.stableSince = 0; p.ready = false; p.scaleSamples = []; }
+    }
     else {
+      p.lastValid = p.lastSeen;
       if (!p.stableSince) p.stableSince = p.lastSeen;
       p.scaleSamples.push(proximity.scale); if (p.scaleSamples.length > 60) p.scaleSamples.shift();
       if (p.lastSeen - p.stableSince >= 2000) {
         p.ready = true;
         if (!p.baseline) p.baseline = p.scaleSamples.reduce((a, b) => a + b, 0) / p.scaleSamples.length;
-        const center = (p.landmarks[23].x + p.landmarks[24].x) / 2;
+        const center = s.limb === 'hands' ? (p.landmarks[11].x + p.landmarks[12].x) / 2 : (p.landmarks[23].x + p.landmarks[24].x) / 2;
         p.center = s.mirror ? 1 - center : center;
       }
     }
@@ -147,30 +220,37 @@ function onPose(p, result) {
 function trackingProblem(p, now) {
   if (state.demo) return '';
   if (p.error) return p.error;
+  if (p.tracker === 'loading') return 'Camera on · Loading body tracking… Your video should already be visible.';
   if (!p.lastSeen || now - p.lastSeen > 1200) return 'Camera tracking unavailable. Stand in view or reconnect.';
   if (p.close) return 'Too close to the camera — pause and return to your starting position. 请回到起始位置';
-  if (!R.proximity(p.landmarks, p.baseline, p.close).valid || !R.tracked(p.landmarks, (state.settings || settings()).limb))
-    return 'Keep your shoulders, hips and selected limbs in view. 等待身体追踪';
+  const limb = (state.settings || settings()).limb;
+  if (!R.proximity(p.landmarks, p.baseline, p.close, limb).valid)
+    return limb === 'hands' ? 'Keep both shoulders in view for the distance check. Hands mode does not need your hips or feet.' : 'Keep both shoulders and hips in view for the distance check.';
+  if (!R.tracked(p.landmarks, limb))
+    return limb === 'hands' ? 'Show at least one hand in the camera view.' : limb === 'legs' ? 'Show at least one ankle in the camera view.' : 'Show at least one hand and one ankle in the camera view.';
   return '';
 }
 async function enableDemo() {
   if (state.phase !== 'setup' || state.connecting) return;
   await stopCameras(); state.demo = true;
   state.players = Array.from({ length: settings().count }, (_, i) => ({ ...newPlayer(i), ready: true }));
-  $('cameraMessage').textContent = 'Mouse / touch demo: tap a blue object to collect it. Camera tracking and distance alerts are not active. In two-player demo, tap in each player’s lane.';
+  cameraMessage('Mouse / touch demo: tap a blue object to collect it. Camera tracking and distance alerts are not active. In two-player demo, tap in each player’s lane.');
   showScores();
 }
 function lockControls() {
   const locked = state.phase !== 'setup' || state.connecting;
   $('gameSettings').disabled = locked; $('connectButton').disabled = locked; $('demoButton').disabled = locked;
   $('setupConnect').disabled = locked; $('setupDemo').disabled = locked;
+  $('cancelConnect').hidden = !state.connecting;
+  $('setupConnect').textContent = $('connectButton').textContent = state.connecting ? 'Connecting…' : state.players.length && !state.demo ? 'Reconnect cameras' : 'Connect cameras';
   document.querySelectorAll('#cameraSelectors select').forEach(s => { s.disabled = locked; });
 }
 function startPractice() {
   if (!canStart(performance.now())) return;
-  state.settings = settings(); state.players.forEach((p, i) => { p.name = names()[i]; p.score = 0; });
+  state.settings = settings(); state.players.forEach((p, i) => { p.name = names()[i]; p.score = 0; p.bonusLeft = 0; });
   state.phase = 'tutorial'; state.practice = 0; state.items = []; state.effects = []; state.paused = false;
   $('setupOverlay').hidden = true; $('tutorialPanel').hidden = false; $('finishButton').hidden = false;
+  $('gameArea').classList.remove('setup-layout'); resize();
   $('tutorialText').textContent = state.demo ? 'Demo: tap a blue target in each lane. Camera play uses your hands or ankles.' :
     state.settings.limb === 'legs' ? 'Step gently sideways LEFT and RIGHT to bring your ankle marker into the blue target. No jumping or high kicks are needed. 双腿向左右小步移动。' :
     'Move your hand marker into the blue target. In legs mode, gentle sideways steps collect objects with your ankle markers. 向左右小步移动也可以收集物品。';
@@ -180,7 +260,7 @@ function startPractice() {
 function makePracticeTargets() {
   state.items = state.players.map(p => ({ owner: p.id, kind: 'good', points: 0, x: p.center,
     y: state.settings.limb === 'legs' ? 0.82 : 0.66, speed: 0, radius: 48,
-    symbol: R.objectList(state.settings.theme, state.settings.custom)[0] }));
+    symbol: R.fruits[0] }));
 }
 function startRound() {
   if (state.phase !== 'tutorial') return;
@@ -209,6 +289,7 @@ function finishRound(completed = false) {
 function reset() {
   state.phase = 'setup'; state.settings = null; state.paused = false; state.items = [];
   $('endOverlay').hidden = true; $('setupOverlay').hidden = false;
+  $('gameArea').classList.add('setup-layout'); resize();
   updateSettings(); lockControls();
 }
 function canStart(now) {
@@ -218,13 +299,20 @@ function lane(p) {
   const width = canvas.width / Math.max(1, state.players.length);
   return { x: width * p.id, width, height: canvas.height };
 }
+function videoBounds(p) {
+  const l = lane(p);
+  if (state.phase !== 'setup' || !p.video?.videoWidth) return l;
+  const scale = Math.min(l.width / p.video.videoWidth, l.height / p.video.videoHeight);
+  const width = p.video.videoWidth * scale, height = p.video.videoHeight * scale;
+  return { x: l.x + (l.width - width) / 2, y: (l.height - height) / 2, width, height };
+}
 function limbPoints(p) {
   if (state.demo || !p.landmarks) return [];
-  const s = state.settings || settings(), l = lane(p);
+  const s = state.settings || settings(), l = videoBounds(p);
   const indices = s.limb === 'hands' ? [15, 16] : s.limb === 'legs' ? [27, 28] : [15, 16, 27, 28];
   return indices.filter(i => p.landmarks[i]?.visibility > 0.55).map(i => ({
     x: l.x + (s.mirror ? 1 - p.landmarks[i].x : p.landmarks[i].x) * l.width,
-    y: p.landmarks[i].y * l.height, label: i < 20 ? 'HAND' : 'ANKLE'
+    y: (l.y || 0) + p.landmarks[i].y * l.height, label: i < 20 ? 'HAND' : 'ANKLE'
   }));
 }
 function itemPixels(item) {
@@ -238,9 +326,9 @@ function catchItem(index) {
     item.x = Math.max(0.2, Math.min(0.8, p.center + (state.practice % 2 ? 0.12 : -0.12)));
     tone(true); return;
   }
-  p.score = Math.max(0, p.score + item.points);
-  state.effects.push({ ...itemPixels(item), text: item.points > 0 ? '+10' : '−10', life: 0.8 });
-  state.items.splice(index, 1); tone(item.kind === 'good');
+  const earned = R.award(p, item);
+  state.effects.push({ ...itemPixels(item), text: item.kind === 'bonus' ? '2× FRUIT! 10s' : earned > 0 ? `+${earned}` : '−10', life: 0.8 });
+  state.items.splice(index, 1); tone(item.kind === 'good' || item.kind === 'bonus');
 }
 function collisions(now) {
   if (state.paused || state.players.some(p => trackingProblem(p, now))) return;
@@ -266,17 +354,19 @@ function draw() {
   for (const p of state.players) {
     const l = lane(p); ctx.save(); ctx.beginPath(); ctx.rect(l.x, 0, l.width, height); ctx.clip();
     if (p.video?.readyState >= 2 && !state.demo) {
+      const view = videoBounds(p);
       ctx.save();
-      if ((state.settings || settings()).mirror) { ctx.translate(l.x + l.width, 0); ctx.scale(-1, 1); ctx.drawImage(p.video, 0, 0, l.width, height); }
-      else ctx.drawImage(p.video, l.x, 0, l.width, height);
-      ctx.restore(); ctx.fillStyle = '#07142355'; ctx.fillRect(l.x, 0, l.width, height);
+      if ((state.settings || settings()).mirror) { ctx.translate(view.x + view.width, view.y || 0); ctx.scale(-1, 1); ctx.drawImage(p.video, 0, 0, view.width, view.height); }
+      else ctx.drawImage(p.video, view.x, view.y || 0, view.width, view.height);
+      ctx.restore();
+      if (state.phase !== 'setup') { ctx.fillStyle = '#07142355'; ctx.fillRect(l.x, 0, l.width, height); }
     }
     if ((state.settings || settings()).limb === 'legs') {
       const center = Math.max(0.25, Math.min(0.75, p.center));
       ctx.fillStyle = '#7dd3fc16'; ctx.fillRect(l.x + (center - 0.15) * l.width, 0, l.width * 0.3, height);
       ctx.strokeStyle = '#7dd3fc88'; ctx.setLineDash([8, 8]); ctx.strokeRect(l.x + (center - 0.15) * l.width, 0, l.width * 0.3, height); ctx.setLineDash([]);
     }
-    if (!trackingProblem(p, performance.now())) for (const point of limbPoints(p)) {
+    if (p.lastSeen && performance.now() - p.lastSeen < 1200 && !p.error) for (const point of limbPoints(p)) {
       ctx.strokeStyle = '#fef08a'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(point.x, point.y, 20, 0, Math.PI * 2); ctx.stroke();
       ctx.fillStyle = '#0b1526'; ctx.fillRect(point.x - 27, point.y - 43, 54, 18); ctx.fillStyle = '#fff';
       ctx.font = '12px system-ui'; ctx.textAlign = 'center'; ctx.fillText(point.label, point.x, point.y - 29);
@@ -284,14 +374,21 @@ function draw() {
     ctx.restore();
     if (p.id > 0) { ctx.strokeStyle = '#7dd3fc'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(l.x, 0); ctx.lineTo(l.x, height); ctx.stroke(); }
   }
+  if (state.phase === 'setup' && !state.players.some(p => p.video?.readyState >= 2)) {
+    ctx.save(); ctx.textAlign = 'center'; ctx.fillStyle = '#b9ccdf'; ctx.font = '18px system-ui';
+    ctx.fillText(state.demo ? 'Mouse / touch demo selected' : 'Your camera preview will appear here', width / 2, height / 2, width - 30);
+    ctx.font = '14px system-ui'; ctx.fillStyle = '#8aa4bc';
+    ctx.fillText(state.connecting ? 'Check the camera permission prompt in your browser' : 'Click Connect cameras below', width / 2, height / 2 + 30, width - 30);
+    ctx.restore();
+  }
   for (const item of state.items) {
     const pos = itemPixels(item), warning = item.speed > 0 && R.warning(item);
     ctx.save();
     if (warning && !$('reduceMotion').checked) ctx.globalAlpha = 0.65 + 0.35 * Math.cos(state.elapsed * Math.PI * 2);
-    ctx.fillStyle = item.kind === 'good' ? '#153c58' : '#781329';
-    ctx.strokeStyle = item.kind === 'good' ? '#9bdeff' : '#ff93a5'; ctx.lineWidth = 4;
+    ctx.fillStyle = item.kind === 'bonus' ? '#614611' : item.kind === 'good' ? '#153c58' : '#781329';
+    ctx.strokeStyle = item.kind === 'bonus' ? '#ffe083' : item.kind === 'good' ? '#9bdeff' : '#ff93a5'; ctx.lineWidth = 4;
     ctx.beginPath();
-    if (item.kind === 'good') ctx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
+    if (item.kind === 'good' || item.kind === 'bonus') ctx.arc(pos.x, pos.y, pos.radius, 0, Math.PI * 2);
     else for (let i = 0; i <= 8; i++) { const a = Math.PI / 8 + i * Math.PI / 4; const x = pos.x + Math.cos(a) * pos.radius, y = pos.y + Math.sin(a) * pos.radius; if (!i) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
     ctx.closePath(); ctx.fill(); ctx.stroke();
     if (item.kind === 'rotten' && rottenImage.complete && rottenImage.naturalWidth) ctx.drawImage(rottenImage, pos.x - pos.radius * 0.8, pos.y - pos.radius * 0.8, pos.radius * 1.6, pos.radius * 1.6);
@@ -301,6 +398,7 @@ function draw() {
       ctx.fillText(text, pos.x, pos.y, pos.radius * 1.65);
     }
     ctx.globalAlpha = 1;
+    if (item.kind === 'bonus') { ctx.font = 'bold 15px system-ui'; ctx.textAlign = 'center'; ctx.fillStyle = '#ffe083'; ctx.fillText('2×', pos.x, pos.y + pos.radius + 15); }
     if (warning) { ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center'; ctx.fillStyle = '#071423'; ctx.fillRect(pos.x - 32, pos.y - pos.radius - 22, 64, 20); ctx.fillStyle = '#fff'; ctx.fillText('leaving', pos.x, pos.y - pos.radius - 11); }
     ctx.restore();
   }
@@ -309,12 +407,22 @@ function draw() {
 function frame(now) {
   const dt = Math.min((now - (state.lastFrame || now)) / 1000, 0.1); state.lastFrame = now;
   if (state.phase === 'setup') {
+    const live = state.players.some(p => p.video?.readyState >= 2) && !state.demo;
+    $('previewBadge').textContent = `${live ? 'Live camera' : 'Camera preview'} · Mirror ${settings().mirror ? 'on' : 'off'}`;
     const ready = canStart(now); $('startButton').disabled = !ready;
-    $('startButton').textContent = ready ? 'Start practice • 开始练习' : 'Waiting for camera & comfortable position…';
-    $('playerStatus').replaceChildren(...state.players.map(p => {
-      const el = document.createElement('p'); const problem = trackingProblem(p, now);
-      el.textContent = `${names()[p.id]}: ${state.demo ? 'Demo ready' : problem || (p.ready ? 'Ready ✓' : 'Hold position for two seconds…')}`; return el;
-    }));
+    $('startButton').textContent = ready ? 'Start practice • 开始练习' : !live ? 'Connect a camera or try the demo' : 'Complete the camera checks below';
+    const statuses = state.players.map(p => {
+      const problem = trackingProblem(p, now);
+      const seen = i => p.landmarks?.[i]?.visibility > 0.55;
+      const limb = settings().limb;
+      const checks = [`Shoulders ${seen(11) && seen(12) ? '✓' : '—'}`];
+      if (limb !== 'hands') checks.push(`Hips ${seen(23) && seen(24) ? '✓' : '—'}`);
+      if (limb !== 'legs') checks.push(`Hand ${seen(15) || seen(16) ? '✓' : '—'}`);
+      if (limb !== 'hands') checks.push(`Ankle ${seen(27) || seen(28) ? '✓' : '—'}`);
+      const progress = Math.min(100, Math.floor((now - (p.stableSince || now)) / 20));
+      return `${names()[p.id]}: ${state.demo ? 'Demo ready' : `${checks.join(' · ')}\n${problem || (p.ready ? 'Ready ✓ — click Start practice' : `Calibrating ${progress}% · Keep these parts in view for two seconds`)}`}`;
+    }).join('\n');
+    if ($('playerStatus').textContent !== statuses) $('playerStatus').textContent = statuses;
   }
   if (['playing', 'tutorial'].includes(state.phase)) {
     const problems = state.players.map(p => { const issue = trackingProblem(p, now); return issue ? `${p.name}: ${issue}` : ''; }).filter(Boolean);
@@ -325,6 +433,7 @@ function frame(now) {
     if (!blocked) {
       if (state.phase === 'playing') {
         state.remaining = Math.max(0, state.remaining - dt); state.elapsed += dt; state.spawn -= dt;
+        state.players.forEach(p => { p.bonusLeft = Math.max(0, p.bonusLeft - dt); });
         if (state.spawn <= 0) {
           state.players.forEach(p => state.items.push(R.spawn(state.settings, p)));
           state.spawn = R.difficulty[state.settings.difficulty].delay * (state.settings.weights ? 1.3 : 1);
@@ -332,7 +441,7 @@ function frame(now) {
         state.items.forEach(item => { item.y += item.speed * dt; });
         state.items = state.items.filter(item => item.y <= 1.12);
         state.effects.forEach(e => { e.life -= dt; e.y -= dt * 35; }); state.effects = state.effects.filter(e => e.life > 0);
-        $('hudScore').textContent = state.players.map(p => `${p.name}: ${p.score}`).join('  |  ');
+        $('hudScore').textContent = state.players.map(p => `${p.name}: ${p.score}${p.bonusLeft > 0 ? ` · 2× ${Math.ceil(p.bonusLeft)}s` : ''}`).join('  |  ');
         $('hudTime').textContent = `${Math.ceil(state.remaining)}s`;
         if (state.remaining <= 0) finishRound(true);
       }
@@ -341,10 +450,15 @@ function frame(now) {
   }
   draw(); requestAnimationFrame(frame);
 }
-function resize() { canvas.width = Math.max(1, $('gameArea').clientWidth); canvas.height = Math.max(1, $('gameArea').clientHeight); }
+function resize() { canvas.width = Math.max(1, $('cameraStage').clientWidth); canvas.height = Math.max(1, $('cameraStage').clientHeight); }
 $('connectButton').addEventListener('click', connectCameras);
 $('setupConnect').addEventListener('click', connectCameras);
 $('setupDemo').addEventListener('click', enableDemo);
+$('setupMirror').addEventListener('click', () => { $('mirror').checked = !$('mirror').checked; updateSettings(); });
+$('cancelConnect').addEventListener('click', async () => {
+  await stopCameras(); state.connecting = false; lockControls();
+  cameraMessage('Camera setup cancelled. You can reconnect or try the mouse / touch demo.');
+});
 $('demoButton').addEventListener('click', enableDemo);
 $('startButton').addEventListener('click', startPractice);
 $('skipTutorial').addEventListener('click', startRound);
@@ -374,5 +488,5 @@ $('gameSettings').addEventListener('change', async event => {
 });
 window.addEventListener('pagehide', () => { state.players.forEach(p => p.stream?.getTracks().forEach(t => t.stop())); });
 $('reduceMotion').checked = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-new ResizeObserver(resize).observe($('gameArea'));
+new ResizeObserver(resize).observe($('cameraStage'));
 loadScores(); cameraSelectors(); updateSettings(); resize(); requestAnimationFrame(frame);

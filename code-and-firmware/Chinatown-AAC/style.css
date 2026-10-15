@@ -641,6 +641,7 @@ header { gap: 20px; }
 .tutorial-panel button { margin: 4px; }
 .target-good, .target-bad { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border: 3px solid #7dd3fc; background: #153c58; border-radius: 50%; flex-shrink: 0; font-size: 25px; }
 .target-bad { border-color: #ff859a; background: #781329; }
+.target-bonus { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border: 3px solid #ffe083; background: #614611; border-radius: 50%; flex-shrink: 0; font-size: 25px; }
 #leaderboard { padding-left: 22px; }
 #leaderboard li { padding: 8px 0; overflow-wrap: anywhere; }
 .programme { padding: 12px 0 0 24px; line-height: 1.8; }
@@ -668,4 +669,27 @@ body.focus-mode .dashboard { max-width: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* Keep setup instructions outside the camera view. */
+.camera-stage { position: absolute; inset: 0; min-width: 0; min-height: 0; }
+.game-container.setup-layout { display: grid; grid-template-rows: minmax(180px, 1fr) auto; align-items: stretch; }
+.setup-layout .camera-stage { position: relative; inset: auto; grid-row: 1; width: 100%; height: 100%; }
+.setup-layout #setupOverlay { position: relative; inset: auto; grid-row: 2; padding: 16px 22px; max-height: 310px; border-top: 1px solid #536779; background: #0b1526; text-align: left; display: block; }
+.setup-layout .overlay-content { max-width: none; }
+.setup-layout .overlay-title { font-size: 22px; margin: 0 0 6px; }
+.setup-layout #setupInstructions { font-size: 15px; line-height: 1.4; margin-bottom: 10px; }
+.setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.setup-actions button { font-size: 14px; padding: 8px 12px; }
+.setup-layout .player-status { margin: 6px 0; font-size: 14px; white-space: pre-line; }
+.setup-layout .player-status p { padding: 3px 0; }
+.setup-layout .btn-primary { padding: 10px 18px; margin: 6px 0 0; font-size: 16px; }
+.setup-layout .play-caption { display: none; }
+.preview-badge { position: absolute; top: 16px; left: 16px; max-width: calc(100% - 150px); padding: 8px 12px; border-radius: 8px; background: #091422df; color: #bce6ff; font-size: 13px; z-index: 2; }
+.game-container:not(.setup-layout) .preview-badge { display: none; }
+#setupMessage[data-error="true"] { color: #ffb3c0; }
+@media (max-width: 600px) {
+  .setup-layout #setupOverlay { padding: 12px; max-height: 330px; }
+  .setup-layout .overlay-title { font-size: 19px; }
+  .preview-badge { left: 10px; top: 16px; padding: 6px 8px; font-size: 12px; }
 }

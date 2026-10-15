@@ -14,10 +14,24 @@ test('hands keep hazards and good items; weights slow the fall', () => {
   assert.equal(R.spawn(base, { id: 0 }, () => 0.2).points, 10);
   assert.ok(R.spawn({ ...base, weights: true }, { id: 0 }, () => 0.2).speed < R.spawn(base, { id: 0 }, () => 0.2).speed);
 });
-test('custom objects are bounded with an empty-input fallback', () => {
-  assert.deepEqual(R.objectList('custom', '⭐, Books, '), ['⭐', 'Books']);
-  assert.deepEqual(R.objectList('custom', ' , '), R.themes.fruit);
-  assert.equal(R.objectList('custom', 'a,b,c,d,e,f,g').length, 6);
+test('standard fruit and celebration items spawn', () => {
+  const fruit = R.spawn(base, { id: 0 }, () => 0.2);
+  assert.ok(R.fruits.includes(fruit.symbol));
+  const bonus = R.spawn(base, { id: 0 }, () => 0.75);
+  assert.equal(bonus.kind, 'bonus'); assert.equal(bonus.points, 0);
+  assert.ok(R.celebrations.includes(bonus.symbol));
+});
+test('bonus doubles fruit only, refreshes without stacking, and is player-specific', () => {
+  const p = { score: 0, bonusLeft: 0 }, other = { score: 0, bonusLeft: 0 };
+  const fruit = { kind: 'good', points: 10 };
+  assert.equal(R.award(p, fruit), 10);
+  R.award(p, { kind: 'bonus' }); assert.equal(p.bonusLeft, 10);
+  assert.equal(R.award(p, fruit), 20);
+  assert.equal(R.award(other, fruit), 10);
+  assert.equal(R.award(p, { kind: 'rotten', points: -10 }), -10);
+  p.bonusLeft = 4; R.award(p, { kind: 'bonus' }); assert.equal(p.bonusLeft, 10);
+  p.bonusLeft = 0; assert.equal(R.award(p, fruit), 10);
+  p.score = 0; R.award(p, { kind: 'bomb', points: -10 }); assert.equal(p.score, 0);
 });
 test('warning starts before disappearance', () => {
   assert.equal(R.warning({ y: 0.5, speed: 0.1 }), false);
@@ -47,4 +61,14 @@ test('selected limb visibility is required', () => {
 test('malformed saved scores cannot break the board', () => {
   assert.deepEqual(R.cleanScores({}), []);
   assert.deepEqual(R.cleanScores([null, { name: 'X', score: -1, mode: 'hands' }]), []);
+});
+test('hands mode calibrates without visible hips but keeps the shoulder distance check', () => {
+  const p = pose(); p[23].visibility = p[24].visibility = 0;
+  assert.equal(R.proximity(p, 0, false, 'hands').valid, true);
+  assert.equal(R.proximity(p, 0, false, 'legs').valid, false);
+  assert.equal(R.tracked(p, 'hands'), true);
+  const reference = R.proximity(p, 0, false, 'hands').scale;
+  assert.equal(R.proximity(pose(1.5), reference, false, 'hands').close, true);
+  p[11].visibility = 0;
+  assert.equal(R.proximity(p, reference, false, 'hands').valid, false);
 });

@@ -22,9 +22,9 @@ Schedule the start 30 minutes before the centre's actual lunch time.
 | Day | Suggested variation |
 | --- | --- |
 | Monday | Fruit collection using gentle hand reaches. |
-| Tuesday | Flowers and gentle sideways steps in legs mode. |
+| Tuesday | Fruit and gentle sideways steps in legs mode. |
 | Wednesday | Celebration objects; two players work toward a shared total. |
-| Thursday | Participants choose their own emoji or short object names. Optional hand-weight mode only for participants whose facilitator has already agreed its use. |
+| Thursday | Comfortable reaches and partner swaps. Optional hand-weight mode only for participants whose facilitator has already agreed its use. |
 | Friday | Friendly team challenge, changing partners and celebrating participation. |
 
 These are five variations of this game, not five separately developed games. A centre
@@ -35,15 +35,20 @@ calendar booking or a clinical exercise prescription.
 
 1. Serve this directory on localhost (for example with VS Code Live Server), or HTTPS.
    Internet access is needed to load the pinned MediaPipe tracking model and optional fonts.
-2. Choose one or two players, optional nicknames, movement, difficulty and objects.
+2. Choose one or two players, optional nicknames, movement and difficulty. Everyone collects fruit, with occasional gold celebration bonuses.
 3. Connect cameras and allow browser access. Two-player mode requires two distinct
    cameras on the same computer. Point each camera at only its assigned player and
    provide each player with enough physical space. Reconnect after changing cameras.
-4. Keep shoulders, hips and the selected hands or feet visible. Hold a comfortable
-   starting position for two seconds. The camera image establishes the reference size.
+4. In Hands mode, keep both shoulders and at least one hand visible; hips and feet
+   are not required. Legs/Both modes also need hips and at least one ankle (and one hand
+   for Both). Hold a comfortable starting position for two seconds. The camera image
+   establishes the reference size. Brief tracking gaps under 0.4 seconds do not reset
+   calibration progress. The setup checks explain what is missing; there is no separate pairing step.
 5. Practise: hands collect through wrist markers; legs collect through ankle markers
    with gentle sideways steps. The practice can be skipped. Scored rounds last 60 seconds.
-6. Blue circles give +10; the red rotten fruit with an X and red bombs deduct 10.
+6. Blue fruit circles give +10. Gold lanterns and red packets activate 2× fruit points
+   for 10 seconds for the catching player. Another bonus refreshes (does not stack) the
+   timer. The bonus clock pauses with gameplay. Red rotten fruit and bombs still deduct 10.
    Scores never fall below zero. Legs mode has a narrower column and no bombs.
 7. Use Pause, Space, or Finish round at any time. Leaving the browser tab pauses a
    scored round; press Resume to continue. Fullscreen hides the surrounding controls.
@@ -55,7 +60,7 @@ calendar booking or a clinical exercise prescription.
   this pulse. Good items and hazards have different shapes as well as different colours.
 - Lost tracking or an apparent move toward the camera automatically pauses both
   players, objects and the clock. Return to the reference position to continue.
-- The proximity warning is an estimate based on shoulder width and torso height in
+- Hands mode uses shoulder width only for the proximity warning; Legs/Both use shoulder width and torso height in
   the image, with an absolute framing check and a calibrated relative-size threshold.
   It does not measure metres, distance to a separate display, or all unsafe positions.
   Camera angle, clothing, occlusion and movement affect it. Keep the camera stationary.
