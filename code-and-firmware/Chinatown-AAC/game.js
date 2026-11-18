@@ -85,8 +85,8 @@ function updateSettings() {
   for (const p of state.players) { p.ready = state.demo; p.baseline = 0; p.stableSince = 0; p.lastValid = 0; p.scaleSamples = []; }
   showScores();
 }
-function cameraSelectors() {
-  const previous = [0, 1].map(i => $(`camera${i}`)?.value);
+function cameraSelectors(preferred) {
+  const previous = preferred || [0, 1].map(i => $(`camera${i}`)?.value);
   $('cameraSelectors').replaceChildren();
   for (let i = 0; i < Number($('players').value); i++) {
     const label = document.createElement('label'); label.htmlFor = `camera${i}`; label.textContent = `Player ${i + 1} camera`;
@@ -94,6 +94,7 @@ function cameraSelectors() {
     const placeholder = new Option(i === 0 ? 'Default camera' : 'Choose a second camera', ''); select.add(placeholder);
     state.devices.forEach((d, n) => select.add(new Option(d.label || `Camera ${n + 1}`, d.deviceId)));
     if (previous[i] && state.devices.some(d => d.deviceId === previous[i])) select.value = previous[i];
+    else if (state.devices[i]) select.value = state.devices[i].deviceId;
     select.disabled = state.phase !== 'setup' || state.connecting;
     $('cameraSelectors').append(label, select);
   }
@@ -109,21 +110,42 @@ async function stopCameras() {
     if (p.pose && !p.busy) closePose(p);
   }
 }
-async function enumerateCameras() {
+async function enumerateCameras(preferred) {
   if (navigator.mediaDevices?.enumerateDevices) {
     state.devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
-    cameraSelectors();
+    cameraSelectors(preferred);
   }
+  return state.devices;
+}
+async function prepareTwoCameraChoices(requested) {
+  await enumerateCameras(requested);
+  // Chrome and Edge may expose only the default device until camera permission
+  // has been granted. Open and immediately close a temporary stream so the
+  // browser can reveal every connected camera before the game opens either one.
+  if (state.devices.length < 2) {
+    const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+    permissionStream.getTracks().forEach(track => track.stop());
+    await enumerateCameras(requested);
+  }
+  if (state.devices.length < 2)
+    throw new Error(`Two-player mode needs two different cameras. The browser detected ${state.devices.length}. Connect another camera, allow camera access, then try again.`);
+  const selected = requested.slice();
+  if (!state.devices.some(device => device.deviceId === selected[0])) selected[0] = state.devices[0].deviceId;
+  if (!state.devices.some(device => device.deviceId === selected[1]) || selected[1] === selected[0])
+    selected[1] = state.devices.find(device => device.deviceId !== selected[0]).deviceId;
+  cameraSelectors(selected);
+  return selected;
 }
 async function connectCameras() {
   if (state.connecting || state.phase !== 'setup') return;
   state.connecting = true; state.demo = false; lockControls();
   await stopCameras();
   const generation = state.generation;
-  const requested = [0, 1].map(i => $(`camera${i}`)?.value || '');
+  let requested = [0, 1].map(i => $(`camera${i}`)?.value || '');
   cameraMessage('Choose Allow in your browser’s camera prompt. Your mirrored preview will appear above.');
   try {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('Open this game on localhost or HTTPS to use a camera.');
+    if (Number($('players').value) === 2) requested = await prepareTwoCameraChoices(requested);
     for (let i = 0; i < Number($('players').value); i++) {
       const p = newPlayer(i); state.players.push(p);
       let id = requested[i];
@@ -483,10 +505,13 @@ canvas.addEventListener('pointerdown', event => {
   for (let i = state.items.length - 1; i >= 0; i--) { const p = itemPixels(state.items[i]); if (Math.hypot(x - p.x, y - p.y) <= p.radius + 20) { catchItem(i); break; } }
 });
 $('gameSettings').addEventListener('change', async event => {
-  if (event.target.id === 'players') { await stopCameras(); state.demo = false; cameraSelectors(); }
+  if (event.target.id === 'players') { await stopCameras(); state.demo = false; await enumerateCameras(); }
   updateSettings();
+});
+navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+  if (state.phase === 'setup' && !state.connecting) enumerateCameras().catch(() => {});
 });
 window.addEventListener('pagehide', () => { state.players.forEach(p => p.stream?.getTracks().forEach(t => t.stop())); });
 $('reduceMotion').checked = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 new ResizeObserver(resize).observe($('cameraStage'));
-loadScores(); cameraSelectors(); updateSettings(); resize(); requestAnimationFrame(frame);
+loadScores(); cameraSelectors(); enumerateCameras().catch(() => {}); updateSettings(); resize(); requestAnimationFrame(frame);
